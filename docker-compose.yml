@@ -1,19 +1,92 @@
 version: '3.8'
 
 services:
+  # PostgreSQL - Metadata storage
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=crawler
+      - POSTGRES_USER=crawler
+      - POSTGRES_PASSWORD=crawler123
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crawler"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis - Distributed URL queue
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # MinIO - S3-compatible object storage
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+
   # Web Crawler
   crawler:
     build: .
     ports:
       - "8080:8080"
     environment:
-      - SPRING_PROFILES_ACTIVE=prod
+      - SPRING_PROFILES_ACTIVE=docker
       - CRAWLER_CONCURRENCY=200
       - CRAWLER_MAX_DEPTH=10
-      - CRAWLER_STORAGE_TYPE=filesystem
-      - CRAWLER_STORAGE_PATH=/data/crawler
+      # Storage configuration
+      - CRAWLER_STORAGE_TYPE=minio
+      - CRAWLER_STORAGE_MINIO_ENDPOINT=http://minio:9000
+      - CRAWLER_STORAGE_MINIO_ACCESS_KEY=minioadmin
+      - CRAWLER_STORAGE_MINIO_SECRET_KEY=minioadmin
+      - CRAWLER_STORAGE_MINIO_BUCKET=crawler-pages
+      # Frontier configuration
+      - CRAWLER_FRONTIER_TYPE=redis
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+      # Database configuration
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/crawler
+      - SPRING_DATASOURCE_USERNAME=crawler
+      - SPRING_DATASOURCE_PASSWORD=crawler123
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=update
+      - CRAWLER_METADATA_ENABLED=true
     volumes:
       - crawler-data:/data/crawler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
@@ -51,6 +124,9 @@ services:
       - prometheus
 
 volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
   crawler-data:
   prometheus-data:
   grafana-data:
